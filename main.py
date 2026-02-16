@@ -453,6 +453,8 @@ def auto_tune(password, profiles):
                 if elapsed < target_time:
                     # undershoot → increase time_cost
                     time_cost += 1
+                    if iteration > (MAX_TUNE_ITER/3) and ratio<0.95:
+                        time_cost += 14
                 else:
                     # overshoot → reduce time_cost (with improved handling)
                     if ratio > 1.5:
