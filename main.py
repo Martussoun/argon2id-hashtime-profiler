@@ -23,10 +23,32 @@ DEFAULT_PROFILE_PARAMS = {
 }
 
 # Oscillation detection
-OSCILLATION_THRESHOLD = 3  # Number of direction changes before triggering damping
+OSCILLATION_THRESHOLD = 5  # Number of direction changes before triggering damping
 
 
 # ---------------- HELPERS ----------------
+def type_validated_input(prompt: str, expected_type, error_message: str = None, enforce_input: bool = False):
+    not_validated = True
+    while not_validated:
+        value = input(prompt)
+        # If enforce_input is True, reject empty input
+        if enforce_input and not value:
+            print("Input cannot be empty. Please try again.")
+            continue
+        elif value:
+            try:
+                parsed_value = expected_type(value)
+                not_validated = False
+                return parsed_value
+            except (ValueError, TypeError):
+                if error_message:
+                    print(error_message)
+                else:
+                    print(f"Invalid input. Expected {expected_type.__name__}. Please try again.")
+        else:
+            return None
+
+
 def clamp_parallelism(p):
     max_p = psutil.cpu_count(logical=True) or 1
     return max(1, min(p, max_p))
@@ -109,9 +131,7 @@ def select_profile(profiles):
         return None, None
     print("\nAvailable profiles:")
     list_profiles(profiles)
-    choice = input("Select profile by number (Enter for default): ").strip()
-    if not choice:
-        choice = str(DEFAULT_PROFILE_NUMBER)
+    choice = str(type_validated_input("Select profile by number: ", int))
     if choice in profiles:
         return choice, profiles[choice]["params"]
     print("Invalid selection")
@@ -119,21 +139,21 @@ def select_profile(profiles):
 
 
 def prompt_save_profile(profiles, time_cost, memory_cost_kib, parallelism):
-    choice = input("Save profile? (y/n): ").strip().lower()
+    choice = type_validated_input("Save profile? (y/n): ", str, enforce_input=True).strip().lower()
     if choice == "y":
         if len(profiles) < MAX_PROFILES:
-            profile_name = input("Enter profile name to save: ").strip()
+            profile_name = type_validated_input("Enter profile name to save: ", str)
             if not profile_name:
                 print("No name entered. Skipping save.")
                 return
         else:
             print("\n⚠ Maximum profiles reached. Choose one to overwrite:")
             list_profiles(profiles)
-            sel = input("Enter number of profile to overwrite: ").strip()
+            sel = type_validated_input("Enter number of profile to overwrite: ", int)
             if sel not in profiles or sel == str(DEFAULT_PROFILE_NUMBER):
                 print("Invalid selection or cannot overwrite default. Skipping save.")
                 return
-            profile_name = input("Enter new profile name: ").strip()
+            profile_name = type_validated_input("Enter new profile name: ", str, enforce_input=True).strip()
             if not profile_name:
                 profile_name = profiles[sel]["name"]
             del profiles[sel]
@@ -211,7 +231,7 @@ def benchmark_argon2id(password, profile):
     print(f"  parallelism : {profile['parallelism']}")
 
     try:
-        runs_input = input("\nEnter number of benchmark runs [default 5]: ").strip()
+        runs_input = type_validated_input("\nEnter number of benchmark runs [default 5]: ", int)
         runs = int(runs_input) if runs_input else 5
     except ValueError:
         print("Invalid number, using 5 runs")
@@ -308,9 +328,9 @@ def damped_adjustment(value, ratio, is_memory=True, damping_factor=0.6):
 
 
 def auto_tune(password, profiles):
-    target_input = input("\nEnter desired hash time in seconds [default 1.0]: ").strip()
+    target_input = type_validated_input("\nEnter desired hash time in seconds [default 1.0]: ", float)
     try:
-        target_time = float(target_input) if target_input else 1.0
+        target_time = target_input if target_input else 1.0
     except ValueError:
         print("Invalid target time")
         return
@@ -318,16 +338,16 @@ def auto_tune(password, profiles):
         print("Target time must be > 0")
         return
 
-    fixed_choice = input("Set which parameter as fixed? (time[t]/memory[m]): ").strip().lower()
+    fixed_choice = type_validated_input("Set which parameter as fixed? (time[t]/memory[m]): ", str, enforce_input=True).strip().lower()
     try:
-        parallelism = clamp_parallelism(int(input("Enter parallelism: ")))
+        parallelism = clamp_parallelism(type_validated_input("Enter parallelism: ", int, enforce_input=True))
         if fixed_choice in ("time", "t"):
-            time_cost = int(input("Enter fixed time_cost: "))
-            memory_cost_kib = int(input("Enter starting memory cost [MiB]: ")) * 1024
+            time_cost = type_validated_input("Enter fixed time_cost: ", int, enforce_input=True)
+            memory_cost_kib = type_validated_input("Enter starting memory cost [MiB]: ", int, enforce_input=True) * 1024
             adjust = "memory"
         elif fixed_choice in ("memory", "m"):
-            memory_cost_kib = int(input("Enter fixed memory_cost [MiB]: ")) * 1024
-            time_cost = int(input("Enter starting time_cost: "))
+            memory_cost_kib = type_validated_input("Enter fixed memory_cost [MiB]: ", int) * 1024
+            time_cost = type_validated_input("Enter starting time_cost: ", int)
             adjust = "time"
         else:
             print("Invalid choice")
@@ -343,9 +363,16 @@ def auto_tune(password, profiles):
         print(f"🛑 Initial memory configuration unsafe: {e}")
         return
 
-    confirm = input("Proceed with these values? [Y/n]: ").strip().lower()
+    confirm = type_validated_input(f"\n_______________RECAP_______________\n"
+                                           f"Target hash time: {target_time}s\n"
+                                           f"Parallelism: {parallelism}\n"
+                                           f"Time cost: {time_cost}\n"
+                                           f"Memory cost: {memory_cost_kib/1024} MiB\n"
+                                           f"Cost parameter to tune: {adjust}\n"
+                                           f"___________________________________\n"
+                                           f"Proceed with these values? [y/n]: ", str, enforce_input=True).strip().lower()
     if confirm == "n":
-        print("Aborted. Returning to main menu.")
+        print("Aborted.")
         return
 
     print(f"\nAuto-tuning to target {target_time:.2f}s (parallelism={parallelism})\n")
@@ -540,7 +567,6 @@ def fine_tune_time_cost(password, last_under, last_over, target_time, parallelis
     for iteration in range(MAX_TUNE_ITER):
         mid_time = lower_bound + (upper_bound - lower_bound) // 2
 
-        # Check convergence - FIXED: was <= 0, now <= 1
         if upper_bound - lower_bound <= 1:
             print(f"✓ Converged: bounds within 1 time_cost unit")
             break
@@ -586,19 +612,20 @@ def fine_tune_time_cost(password, last_under, last_over, target_time, parallelis
 
 def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_time, runs=5):
     """Verify that configuration produces stable results over multiple runs"""
-    print(f"\n  Verifying stability over {runs} runs...")
+    print(f"\n  Verifying stability over {runs} runs..."
+          f"\n =================================================")
     run_times = []
 
     for i in range(runs):
         run_time, _ = hash_once(password, time_cost, memory_cost_kib, parallelism)
         run_times.append(run_time)
-        within_target = target_time * (1 - TUNING_EPSILON) <= run_time <= target_time
+        within_target = target_time * (1 - TUNING_EPSILON) <= run_time < target_time
         status = "✓" if within_target else "✗"
         print(f"    Run {i + 1}: {run_time:.3f}s {status}")
 
     # Check if all runs are within acceptable range
     all_stable = all(
-        target_time * (1 - TUNING_EPSILON) <= rt <= target_time
+        target_time * (1 - TUNING_EPSILON) <= rt < target_time
         for rt in run_times
     )
 
@@ -623,16 +650,16 @@ def main_loop():
         print("  1 → Benchmark profile")
         print("  2 → Auto-tune hash time")
         print("  3 → Exit")
-        mode = input("> ").strip()
+        mode = type_validated_input("> ", str, enforce_input=True).strip()
 
         if mode == "1":
             profile_num, profile = select_profile(profiles)
             if profile:
                 benchmark_argon2id(PASSWORD, profile)
-            input("\nPress Enter to return to main menu...")
+            type_validated_input("\nPress Enter to return to main menu...", str)
         elif mode == "2":
             auto_tune(PASSWORD, profiles)
-            input("\nPress Enter to return to main menu...")
+            type_validated_input("\nPress Enter to return to main menu...", str)
         elif mode == "3":
             print("Exiting application. Goodbye!")
             run_main = False
