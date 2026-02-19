@@ -50,8 +50,7 @@ def type_validated_input(prompt: str, expected_type, error_message: str = None, 
 
 
 def clamp_parallelism(p):
-    max_p = psutil.cpu_count(logical=True) or 1
-    return max(1, min(p, max_p))
+    return max(1, p)
 
 
 def available_memory_kib():
