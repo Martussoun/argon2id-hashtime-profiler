@@ -7,6 +7,7 @@ from argon2 import PasswordHasher
 from argon2.low_level import Type
 
 # ---------------- CONSTANTS ----------------
+DUMMY_PASSWORD = "sAMp1ep@ssw0rD:_T35t"
 PROFILES_FILE = "argon2_profiles.json"
 MEMORY_SAFETY_RATIO = 0.85
 TUNING_EPSILON = 0.05
@@ -33,7 +34,6 @@ def type_validated_input(prompt: str, expected_type, error_message: str = None, 
     not_validated = True
     while not_validated:
         value = input(prompt)
-
         if enforce_input and not value:
             print("Input cannot be empty. Please try again.")
             continue
@@ -477,7 +477,7 @@ def auto_tune(password, profiles):
 
             try:
                 ensure_memory_safe(memory_cost_kib)
-            except MemoryError as e:
+            except MemoryError:
                 print(f"⚠ Adjusted memory exceeds safe limit, capping...")
                 memory_cost_kib = int(available_memory_kib() * MEMORY_SAFETY_RATIO)
 
@@ -631,7 +631,6 @@ def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_t
 
 # ---------------- MAIN LOOP ----------------
 def main_loop():
-    DUMMY_PASSWORD = "sAMp1ep@ssw0rD:_T35t"
     profiles = initialize_profiles()
     show_system_info()
     run_main = True
