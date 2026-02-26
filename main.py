@@ -19,7 +19,9 @@ DEFAULT_PROFILE_NAME = "default"
 DEFAULT_PROFILE_PARAMS = {
     "time_cost": 3,
     "memory_cost_kib": 65_536,  # 64 MiB
-    "parallelism": 1
+    "parallelism": 2,
+    "hash_len": 32,
+    "salt_len": 16
 }
 
 # Oscillation detection
@@ -31,7 +33,7 @@ def type_validated_input(prompt: str, expected_type, error_message: str = None, 
     not_validated = True
     while not_validated:
         value = input(prompt)
-        # If enforce_input is True, reject empty input
+
         if enforce_input and not value:
             print("Input cannot be empty. Please try again.")
             continue
@@ -73,7 +75,7 @@ def show_system_info():
     print(f"\nSystem info:")
     print(f"  Total RAM available: {available_mib:.1f} MiB")
     print(
-        f"  Recommended maximum memory cost: {recommended_max_mib:.1f} MiB (~{int(MEMORY_SAFETY_RATIO * 100)}% of available RAM)")
+        f"  Recommended maximum memory cost for testing: {recommended_max_mib:.1f} MiB (~{int(MEMORY_SAFETY_RATIO * 100)}% of available RAM)")
 
 
 # ---------------- PROFILE HANDLING ----------------
@@ -137,7 +139,7 @@ def select_profile(profiles):
     return None, None
 
 
-def prompt_save_profile(profiles, time_cost, memory_cost_kib, parallelism):
+def prompt_save_profile(profiles, time_cost, memory_cost_kib, parallelism, hash_len, salt_len):
     choice = type_validated_input("Save profile? (y/n): ", str, enforce_input=True).strip().lower()
     if choice == "y":
         if len(profiles) < MAX_PROFILES:
@@ -171,7 +173,9 @@ def prompt_save_profile(profiles, time_cost, memory_cost_kib, parallelism):
             "params": {
                 "time_cost": time_cost,
                 "memory_cost_kib": memory_cost_kib,
-                "parallelism": parallelism
+                "parallelism": parallelism,
+                "hash_len": hash_len,
+                "salt_len": salt_len
             }
         }
         save_profiles(profiles)
@@ -192,7 +196,7 @@ def monitor_peak_memory(process, peak, stop_event, interval=0.005):
 
 
 # ---------------- SINGLE HASH TEST ----------------
-def hash_once(password, time_cost, memory_cost_kib, parallelism=1, hash_len=32, salt_len=16):
+def hash_once(password, time_cost, memory_cost_kib, parallelism=1, hash_len=32, salt_len=16, return_hash=False):
     if time_cost <= 0 or memory_cost_kib <= 0:
         raise ValueError("time_cost and memory_cost_kib must be > 0")
     ensure_memory_safe(memory_cost_kib)
@@ -214,11 +218,13 @@ def hash_once(password, time_cost, memory_cost_kib, parallelism=1, hash_len=32, 
 
     start = time.perf_counter()
     try:
-        ph.hash(password)
+        generated_hash = ph.hash(password)
     finally:
         end = time.perf_counter()
         stop_event.set()
         thread.join()
+    if return_hash:
+        return end - start, peak[0], generated_hash
     return end - start, peak[0]
 
 
@@ -228,6 +234,8 @@ def benchmark_argon2id(password, profile):
     print(f"  time_cost   : {profile['time_cost']}")
     print(f"  memory_cost : {profile['memory_cost_kib'] / 1024:.1f} MiB")
     print(f"  parallelism : {profile['parallelism']}")
+    print(f"  hash length : {profile['hash_len']}")
+    print(f"  salt length : {profile['salt_len']}")
 
     try:
         runs_input = type_validated_input("\nEnter number of benchmark runs [default 5]: ", int)
@@ -239,22 +247,39 @@ def benchmark_argon2id(password, profile):
     print(f"\nRunning benchmark for {runs} runs...\n")
     timings = []
     peaks = []
+    final_hash=None
 
     for i in range(runs):
-        elapsed, peak = hash_once(
-            password,
-            profile['time_cost'],
-            profile['memory_cost_kib'],
-            profile['parallelism']
-        )
+        if i == runs - 1:
+            elapsed, peak, final_hash = hash_once(
+                password,
+                profile['time_cost'],
+                profile['memory_cost_kib'],
+                profile['parallelism'],
+                profile['hash_len'],
+                profile['salt_len'],
+                return_hash=True
+            )
+        else:
+            elapsed, peak = hash_once(
+                password,
+                profile['time_cost'],
+                profile['memory_cost_kib'],
+                profile['parallelism'],
+                profile['hash_len'],
+                profile['salt_len']
+            )
         timings.append(elapsed)
         peaks.append(peak)
+
         print(
             f"Run {i + 1}: "
             f"time = {elapsed:.4f}s | "
             f"peak memory = {peak / (1024 * 1024):.2f} MiB"
         )
 
+    print("\nExample Argon2id hash using the dummy password and selected parameters:")
+    print(final_hash)
     avg_time = sum(timings) / runs
     avg_peak = sum(peaks) / runs
     print("-" * 50)
@@ -262,9 +287,8 @@ def benchmark_argon2id(password, profile):
     print(f"Average peak memory: {avg_peak / (1024 * 1024):.2f} MiB")
 
 
-# ---------------- IMPROVED AUTO-TUNE ----------------
+# ----------------AUTO-TUNE ----------------
 class OscillationDetector:
-    """Detects when tuning is oscillating between over/under target"""
 
     def __init__(self, threshold=OSCILLATION_THRESHOLD):
         self.history = []  # List of (elapsed, target) tuples
@@ -277,7 +301,6 @@ class OscillationDetector:
         if len(self.history) < self.threshold + 1:
             return False
 
-        # Check if we're alternating between over and under
         direction_changes = 0
         for i in range(len(self.history) - 1):
             prev_over = self.history[i][0] > self.history[i][1]
@@ -325,7 +348,6 @@ def damped_adjustment(value, ratio, is_memory=True, damping_factor=0.6):
             else:
                 return max(1, value - 1)
 
-
 def auto_tune(password, profiles):
     target_input = type_validated_input("\nEnter desired hash time in seconds [default 1.0]: ", float)
     try:
@@ -336,6 +358,25 @@ def auto_tune(password, profiles):
     if target_time <= 0:
         print("Target time must be > 0")
         return
+
+    if type_validated_input("Set custom hash or salt length? (y/n): ", str, enforce_input=True).strip().lower() in {"y", "yes"}:
+        try:
+            hash_len_input = type_validated_input("Enter hash length [default 32]: ", int)
+            salt_len_input = type_validated_input("Enter salt length [default 16]: ", int)
+
+            hash_len = int(hash_len_input) if hash_len_input else 32
+            salt_len = int(salt_len_input) if salt_len_input else 16
+
+            if hash_len <= 0 or salt_len <= 0:
+                print("hash_len and salt_len must be > 0")
+                return
+
+        except ValueError:
+            print("Invalid hash/salt length")
+            return
+    else:
+        hash_len = 32
+        salt_len = 16
 
     fixed_choice = type_validated_input("Set which parameter as fixed? (time[t]/memory[m]): ", str, enforce_input=True).strip().lower()
     try:
@@ -363,13 +404,15 @@ def auto_tune(password, profiles):
         return
 
     confirm = type_validated_input(f"\n_______________RECAP_______________\n"
-                                           f"Target hash time: {target_time}s\n"
-                                           f"Parallelism: {parallelism}\n"
-                                           f"Time cost: {time_cost}\n"
-                                           f"Memory cost: {memory_cost_kib/1024} MiB\n"
-                                           f"Cost parameter to tune: {adjust}\n"
-                                           f"___________________________________\n"
-                                           f"Proceed with these values? [y/n]: ", str, enforce_input=True).strip().lower()
+                                   f"Target hash time: {target_time}s\n"
+                                   f"Parallelism: {parallelism}\n"
+                                   f"Time cost: {time_cost}\n"
+                                   f"Memory cost: {memory_cost_kib/1024} MiB\n"
+                                   f"Cost parameter to tune: {adjust}\n"
+                                   f"Hash length: {hash_len}\n"
+                                   f"Salt length: {salt_len}\n"
+                                   f"___________________________________\n"
+                                   f"Proceed with these values? [y/n]: ", str, enforce_input=True).strip().lower()
     if confirm == "n":
         print("Aborted.")
         return
@@ -384,7 +427,7 @@ def auto_tune(password, profiles):
     # ---------- coarse tuning ----------
     for iteration in range(MAX_TUNE_ITER):
         try:
-            elapsed, peak = hash_once(password, time_cost, memory_cost_kib, parallelism)
+            elapsed, peak = hash_once(password, time_cost, memory_cost_kib, parallelism, hash_len, salt_len)
         except MemoryError as e:
             print(f"🛑 {e}")
             if adjust == "memory":
@@ -397,10 +440,8 @@ def auto_tune(password, profiles):
         ratio = elapsed / target_time
         oscillation_detector.add_result(elapsed, target_time)
 
-        print(
-            f"[Iter {iteration + 1}] time_cost={time_cost}, memory_cost={memory_cost_kib / 1024:.1f} MiB → "
-            f"{elapsed:.3f}s | peak memory: {peak / (1024 * 1024):.1f} MiB | ratio: {ratio:.2f}"
-        )
+        print(f"[Iter {iteration + 1}] time_cost={time_cost}, memory_cost={memory_cost_kib / 1024:.1f} MiB → "
+              f"{elapsed:.3f}s | peak memory: {peak / (1024 * 1024):.1f} MiB | ratio: {ratio:.2f}")
 
         # Check for oscillation
         if oscillation_detector.is_oscillating() and not damping_active:
@@ -424,42 +465,45 @@ def auto_tune(password, profiles):
                 memory_cost_kib = damped_adjustment(memory_cost_kib, ratio, is_memory=True)
             else:
                 if elapsed < target_time:
-                    # undershoot → increase memory
                     factor = 1.20 if ratio < 0.8 else 1.15 if ratio < 0.9 else 1.05
                     memory_cost_kib = int(memory_cost_kib * factor)
                 else:
-                    # overshoot → reduce memory (with improved handling)
                     if ratio > 1.5:
-                        # More conservative reduction to avoid wild swings
-                        factor = max(0.6, 1 / (ratio * 0.8))  # Damped by 0.8
+                        factor = max(0.6, 1 / (ratio * 0.8))
                         memory_cost_kib = max(MIN_MEM_STEP_KIB, int(memory_cost_kib * factor))
-                        print(
-                            f"⚠ High ratio detected ({ratio:.2f}), reducing memory to {memory_cost_kib / 1024:.1f} MiB")
+                        print(f"⚠ High ratio detected ({ratio:.2f}), reducing memory to {memory_cost_kib / 1024:.1f} MiB")
                     else:
                         memory_cost_kib = max(MIN_MEM_STEP_KIB, int(memory_cost_kib * COARSE_DOWN_FACTOR))
 
-            # Validate memory safety before next iteration
             try:
                 ensure_memory_safe(memory_cost_kib)
             except MemoryError as e:
                 print(f"⚠ Adjusted memory exceeds safe limit, capping...")
                 memory_cost_kib = int(available_memory_kib() * MEMORY_SAFETY_RATIO)
 
+
         else:  # adjust == "time"
+
+            # Always use damping helper if damping_active, else rough coarse adjustment
+
             if damping_active:
                 time_cost = damped_adjustment(time_cost, ratio, is_memory=False)
+
             else:
                 if elapsed < target_time:
-                    # undershoot → increase time_cost
-                    time_cost += 1
-                    if iteration > (MAX_TUNE_ITER/3) and ratio<0.95:
-                        time_cost += 14
+                    # Undershoot → increase time_cost aggressively depending on ratio
+                    if ratio < 0.8:
+                        time_cost += max(1, int(time_cost * 0.25))
+                    elif ratio < 0.9:
+                        time_cost += max(1, int(time_cost * 0.10))
+                    else:
+                        time_cost += 1
                 else:
-                    # overshoot → reduce time_cost (with improved handling)
+                    # Overshoot → decrease time_cost aggressively if ratio high
                     if ratio > 1.5:
-                        # More conservative reduction
-                        max_decrement = max(1, time_cost // 2)  # Cap at 50%
-                        calculated_decrement = int(time_cost * (1 - 1 / (ratio * 0.9)))
+                        max_decrement = max(1, time_cost // 2)
+                        calculated_decrement = int(
+                            time_cost * (1 - 1 / (ratio ** 0.6)))  # same damping factor as helper
                         decrement = min(max_decrement, max(1, calculated_decrement))
                         time_cost = max(1, time_cost - decrement)
                         print(f"⚠ High ratio detected ({ratio:.2f}), reducing time_cost to {time_cost}")
@@ -471,30 +515,32 @@ def auto_tune(password, profiles):
         return
 
     # ---------- fine-tuning phase ----------
-    print("\n" + "=" * 60)
-    print("FINE-TUNING PHASE: Binary search for optimal parameters")
-    print("=" * 60 + "\n")
-
     if adjust == "memory":
-        best_candidate = fine_tune_memory(
-            password, last_under, last_over, target_time, parallelism
-        )
+        print("\n" + "=" * 60)
+        print("FINE-TUNING PHASE: Binary search for optimal parameters")
+        print("=" * 60 + "\n")
+        best_candidate = fine_tune_memory(password, last_under, last_over, target_time, parallelism, hash_len, salt_len)
     else:
-        best_candidate = fine_tune_time_cost(
-            password, last_under, last_over, target_time, parallelism
-        )
+        # Time tuning removed: pick closest under-target candidate
+        best_candidate = last_under
+        print(f"Selected time_cost candidate: time_cost={best_candidate[0]}, "
+              f"memory_cost={best_candidate[1] / 1024:.1f} MiB → {best_candidate[2]:.3f}s")
 
     if best_candidate:
+        final_elapsed, _, final_hash = hash_once(password,best_candidate[0], best_candidate[1],parallelism, hash_len, salt_len, return_hash=True)
         print("\n✔ Tuning complete")
-        print(f"Final parameters:")
+        print("\nExample Argon2id hash using the dummy password and final parameters:")
+        print(final_hash)
+        print(f"\nFinal parameters:")
         print(f"  time_cost   = {best_candidate[0]}")
         print(f"  memory_cost = {best_candidate[1] / 1024:.1f} MiB")
         print(f"  parallelism = {parallelism}")
-        print(f"  hash time   = {best_candidate[2]:.3f}s")
-        prompt_save_profile(profiles, best_candidate[0], best_candidate[1], parallelism)
+        print(f"  hash length = {hash_len}")
+        print(f"  salt length = {salt_len}")
+        print(f"  hash time   ~ During tuning: {best_candidate[2]:.3f}s, Final run: {final_elapsed:.3f}s")
+        prompt_save_profile(profiles, best_candidate[0], best_candidate[1], parallelism, hash_len, salt_len)
 
-
-def fine_tune_memory(password, last_under, last_over, target_time, parallelism):
+def fine_tune_memory(password, last_under, last_over, target_time, parallelism, hash_len, salt_len):
     """Fine-tune memory cost using binary search"""
     print("Fine-tuning memory (converging from below)...\n")
 
@@ -508,14 +554,14 @@ def fine_tune_memory(password, last_under, last_over, target_time, parallelism):
 
         # Check convergence
         if upper_bound - lower_bound <= MIN_MEM_STEP_KIB:
-            print(f"✓ Converged: bounds within {MIN_MEM_STEP_KIB} KiB")
+            print(f"Converged: bounds within {MIN_MEM_STEP_KIB} KiB, reverting to last known coarse-tuned parameters under target time.")
             break
 
         if mid_mem <= lower_bound or mid_mem >= upper_bound:
             break
 
         try:
-            elapsed, peak = hash_once(password, time_cost, mid_mem, parallelism)
+            elapsed, peak = hash_once(password, time_cost, mid_mem, parallelism, hash_len, salt_len)
         except MemoryError as e:
             print(f"⚠ Memory test failed: {e}")
             upper_bound = mid_mem
@@ -556,61 +602,6 @@ def fine_tune_memory(password, last_under, last_over, target_time, parallelism):
     return best_candidate
 
 
-def fine_tune_time_cost(password, last_under, last_over, target_time, parallelism):
-    """Fine-tune time_cost using binary search"""
-    print("Fine-tuning time_cost (converging from below)...\n")
-
-    best_candidate = last_under
-    lower_bound = last_under[0]
-    upper_bound = last_over[0]
-    memory_cost_kib = last_under[1]
-
-    for iteration in range(MAX_TUNE_ITER):
-        mid_time = lower_bound + (upper_bound - lower_bound) // 2
-
-        if upper_bound - lower_bound <= 1:
-            print(f"✓ Converged: bounds within 1 time_cost unit")
-            break
-
-        if mid_time <= lower_bound or mid_time >= upper_bound:
-            break
-
-        elapsed, peak = hash_once(password, mid_time, memory_cost_kib, parallelism)
-        print(
-            f"[Fine iter {iteration + 1}] time_cost={mid_time}, memory_cost={memory_cost_kib / 1024:.1f} MiB → {elapsed:.3f}s")
-
-        # Reject overshoot immediately
-        if elapsed > target_time:
-            upper_bound = mid_time
-            continue
-
-        # Update best if this is better
-        if elapsed > best_candidate[2]:
-            best_candidate = (mid_time, memory_cost_kib, elapsed, peak)
-
-        # Check if within epsilon
-        if elapsed >= target_time * (1 - TUNING_EPSILON):
-            if verify_stability(password, best_candidate[0], best_candidate[1],
-                                parallelism, target_time):
-                print("✔ Stable configuration found")
-                return best_candidate
-            else:
-                # If unstable, narrow the search
-                if elapsed > target_time * (1 - TUNING_EPSILON / 2):
-                    upper_bound = mid_time
-                else:
-                    lower_bound = mid_time
-                continue
-
-        # Update bounds
-        if elapsed < target_time:
-            lower_bound = mid_time
-        else:
-            upper_bound = mid_time
-
-    return best_candidate
-
-
 def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_time, runs=5):
     """Verify that configuration produces stable results over multiple runs"""
     print(f"\n  Verifying stability over {runs} runs..."
@@ -638,10 +629,9 @@ def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_t
         print(f"  ✗ Unstable: some runs outside target range")
         return False
 
-
 # ---------------- MAIN LOOP ----------------
 def main_loop():
-    PASSWORD = "samp1ep@ssw0rD:_165"
+    DUMMY_PASSWORD = "sAMp1ep@ssw0rD:_T35t"
     profiles = initialize_profiles()
     show_system_info()
     run_main = True
@@ -656,13 +646,13 @@ def main_loop():
         if mode == "1":
             profile_num, profile = select_profile(profiles)
             if profile:
-                benchmark_argon2id(PASSWORD, profile)
+                benchmark_argon2id(DUMMY_PASSWORD, profile)
             type_validated_input("\nPress Enter to return to main menu...", str)
         elif mode == "2":
-            auto_tune(PASSWORD, profiles)
+            auto_tune(DUMMY_PASSWORD, profiles)
             type_validated_input("\nPress Enter to return to main menu...", str)
         elif mode == "3":
-            print("Exiting application. Goodbye!")
+            print("Exiting application")
             run_main = False
         else:
             print("Invalid selection. Try again.")
