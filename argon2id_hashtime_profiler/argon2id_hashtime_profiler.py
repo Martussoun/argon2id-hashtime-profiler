@@ -8,7 +8,9 @@ from argon2.low_level import Type
 
 # ---------------- CONSTANTS ----------------
 DUMMY_PASSWORD = "sAMp1ep@ssw0rD:_T35t"
-PROFILES_FILE = "argon2_profiles.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILES_FILE = os.path.join(SCRIPT_DIR, "argon2_profiles.json")
+#PROFILES_FILE = "argon2_profiles.json"
 MEMORY_SAFETY_RATIO = 0.85
 TUNING_EPSILON = 0.05
 MAX_TUNE_ITER = 100
@@ -582,7 +584,7 @@ def fine_tune_memory(password, last_under, last_over, target_time, parallelism, 
         # Check if within epsilon
         if elapsed >= target_time * (1 - TUNING_EPSILON):
             if verify_stability(password, best_candidate[0], best_candidate[1],
-                                parallelism, target_time):
+                                parallelism, target_time, hash_len, salt_len):
                 print("✔ Stable configuration found")
                 return best_candidate
             else:
@@ -602,14 +604,14 @@ def fine_tune_memory(password, last_under, last_over, target_time, parallelism, 
     return best_candidate
 
 
-def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_time, runs=5):
+def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_time, hash_len, salt_len, runs=5):
     """Verify that configuration produces stable results over multiple runs"""
     print(f"\n  Verifying stability over {runs} runs..."
           f"\n =================================================")
     run_times = []
 
     for i in range(runs):
-        run_time, _ = hash_once(password, time_cost, memory_cost_kib, parallelism)
+        run_time, _ = hash_once(password, time_cost, memory_cost_kib, parallelism, hash_len, salt_len)
         run_times.append(run_time)
         within_target = target_time * (1 - TUNING_EPSILON) <= run_time < target_time
         status = "✓" if within_target else "✗"
