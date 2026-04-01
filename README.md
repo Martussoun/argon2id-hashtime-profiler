@@ -1,6 +1,6 @@
-# Argon2 Hash Tuner & Benchmark Tool
+# Argon2 Hashtime Tuner & Benchmark Tool
 
-An simple Python CLI utility for benchmarking and auto-tuning **Argon2id** hash parameters based on desired hash time.
+A simple Python CLI utility for benchmarking and auto-tuning **Argon2id** hash parameters based on desired hash time.
 
 ## Features
 
