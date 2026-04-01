@@ -33,7 +33,7 @@ A simple Python CLI utility for benchmarking and auto-tuning **Argon2id** hash p
    ```bash
    source argonvenv/bin/activate
    ```
-5.  **Install Python dependencies.** Run the following command in the terminal:
+5.  **Install Python dependencies.**
     ```bash
     pip install -r requirements.txt
     ```
