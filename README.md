@@ -66,7 +66,7 @@ After the tuning finishes you will be offered an option to save the profile.
 **(3)Exit**
 Safely closes the application.
 
-## NOTE:
+## NOTE
  **The script uses a dummy password(sAMp1ep@ssw0rD:_T35t) for demonstration. Never use this password in a production environment and DO NOT use this script to hash real passwords(by changing the dummy password in the script) as they are displayed on benchmark/tuning completion!**
 
 **This project is licensed under the MIT License - see the `LICENSE` file for details.**
