@@ -16,7 +16,7 @@ An simple Python CLI utility for benchmarking and auto-tuning **Argon2id** hash 
 
 ## Installation
 
-1.  **Clone the repository or download only `argon2id_hashtime_profiler.py` **
+1.  **Clone the repository or download only `argon2id_hashtime_profiler.py`**
 2.  **Create a virtual environment**
     ```bash
     python3 -m venv argonvenv
