@@ -10,7 +10,6 @@ from argon2.low_level import Type
 DUMMY_PASSWORD = "sAMp1ep@ssw0rD:_T35t"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILES_FILE = os.path.join(SCRIPT_DIR, "argon2_profiles.json")
-#PROFILES_FILE = "argon2_profiles.json"
 MEMORY_SAFETY_RATIO = 0.85
 TUNING_EPSILON = 0.05
 MAX_TUNE_ITER = 100
@@ -184,9 +183,17 @@ def prompt_save_profile(profiles, time_cost, memory_cost_kib, parallelism, hash_
     else:
         print("Profile not saved.")
 
+# ------------ MEMORY MEASURE ONCE -----------
+def mem_measure_once():
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+
+    # Convert RSS memory to MB
+    memory_mb = memory_info.rss / (1024 * 1024)
+    return round(memory_mb,2)
 
 # ---------------- MEMORY MONITOR ----------------
-def monitor_peak_memory(process, peak, stop_event, interval=0.005):
+def monitor_peak_memory(process, peak, stop_event, interval=0.02):
     try:
         while not stop_event.is_set():
             rss = process.memory_info().rss
@@ -232,6 +239,7 @@ def hash_once(password, time_cost, memory_cost_kib, parallelism=1, hash_len=32, 
 
 # ---------------- BENCHMARK ----------------
 def benchmark_argon2id(password, profile):
+    mem_overhead=mem_measure_once()
     print("\nSelected profile parameters:")
     print(f"  time_cost   : {profile['time_cost']}")
     print(f"  memory_cost : {profile['memory_cost_kib'] / 1024:.1f} MiB")
@@ -282,11 +290,26 @@ def benchmark_argon2id(password, profile):
 
     print("\nExample Argon2id hash using the dummy password and selected parameters:")
     print(final_hash)
+    min_time = min(timings)
+    max_time = max(timings)
     avg_time = sum(timings) / runs
     avg_peak = sum(peaks) / runs
     print("-" * 50)
-    print(f"Average time:        {avg_time:.4f} s")
-    print(f"Average peak memory: {avg_peak / (1024 * 1024):.2f} MiB")
+    show_ms = min_time < 0.2
+
+    if show_ms:
+        print(f"Shortest time:       {min_time:.4f} s ({min_time * 1000:.2f} ms)")
+        print(f"Longest time:        {max_time:.4f} s ({max_time * 1000:.2f} ms)")
+        print(f"Average time:        {avg_time:.4f} s ({avg_time * 1000:.2f} ms)")
+        print(f"Average peak memory: {avg_peak / (1024 * 1024):.2f} MiB")
+        print(f"Script mem overhead: {mem_overhead} MiB")
+        print(f"Real hash memory:    {avg_peak / (1024 * 1024) - mem_overhead} MiB")
+    else:
+        print(f"Shortest time:       {min_time:.4f} s")
+        print(f"Longest time:        {max_time:.4f} s")
+        print(f"Average time:        {avg_time:.4f} s")
+        print(f"Average peak memory: {avg_peak / (1024 * 1024):.2f} MiB")
+        print(f"Script mem overhead: {mem_overhead} MiB")
 
 
 # ----------------AUTO-TUNE ----------------
@@ -303,10 +326,11 @@ class OscillationDetector:
         if len(self.history) < self.threshold + 1:
             return False
 
+        recent = self.history[-(self.threshold + 1):]
         direction_changes = 0
-        for i in range(len(self.history) - 1):
-            prev_over = self.history[i][0] > self.history[i][1]
-            curr_over = self.history[i + 1][0] > self.history[i + 1][1]
+        for i in range(len(recent) - 1):
+            prev_over = recent[i][0] > recent[i][1]
+            curr_over = recent[i + 1][0] > recent[i + 1][1]
             if prev_over != curr_over:
                 direction_changes += 1
 
@@ -402,7 +426,7 @@ def auto_tune(password, profiles):
     try:
         ensure_memory_safe(memory_cost_kib)
     except MemoryError as e:
-        print(f"🛑 Initial memory configuration unsafe: {e}")
+        print(f"Initial memory configuration unsafe: {e}")
         return
 
     confirm = type_validated_input(f"\n_______________RECAP_______________\n"
@@ -431,7 +455,7 @@ def auto_tune(password, profiles):
         try:
             elapsed, peak = hash_once(password, time_cost, memory_cost_kib, parallelism, hash_len, salt_len)
         except MemoryError as e:
-            print(f"🛑 {e}")
+            print(f"{e}")
             if adjust == "memory":
                 print("Reducing memory and retrying...")
                 memory_cost_kib = max(MIN_MEM_STEP_KIB, memory_cost_kib // 2)
@@ -452,9 +476,11 @@ def auto_tune(password, profiles):
 
         # Record under/over
         if elapsed < target_time:
-            last_under = (time_cost, memory_cost_kib, elapsed, peak)
+            if last_under is None or elapsed > last_under[2]:
+                last_under = (time_cost, memory_cost_kib, elapsed, peak)
         else:
-            last_over = (time_cost, memory_cost_kib, elapsed, peak)
+            if last_over is None or elapsed < last_over[2]:
+                last_over = (time_cost, memory_cost_kib, elapsed, peak)
 
         # Check if bracketed
         if last_under and last_over:
@@ -539,7 +565,10 @@ def auto_tune(password, profiles):
         print(f"  parallelism = {parallelism}")
         print(f"  hash length = {hash_len}")
         print(f"  salt length = {salt_len}")
-        print(f"  hash time   ~ During tuning: {best_candidate[2]:.3f}s, Final run: {final_elapsed:.3f}s")
+        if best_candidate[2] <0.2 or final_elapsed < 0.2:
+            print(f"  hash time   ~ During tuning: {best_candidate[2]:.3f}s ({best_candidate[2] * 1000:.2f} ms), Final run: {final_elapsed:.3f}s ({final_elapsed * 1000:.2f} ms)")
+        else:
+            print(f"  hash time   ~ During tuning: {best_candidate[2]:.3f}s, Final run: {final_elapsed:.3f}s")
         prompt_save_profile(profiles, best_candidate[0], best_candidate[1], parallelism, hash_len, salt_len)
 
 def fine_tune_memory(password, last_under, last_over, target_time, parallelism, hash_len, salt_len):
@@ -633,30 +662,40 @@ def verify_stability(password, time_cost, memory_cost_kib, parallelism, target_t
 
 # ---------------- MAIN LOOP ----------------
 def main_loop():
-    profiles = initialize_profiles()
-    show_system_info()
-    run_main = True
+    try:
+        profiles = initialize_profiles()
+        show_system_info()
+        run_main = True
 
-    while run_main:
-        print("\nChoose mode:")
-        print("  1 → Benchmark profile")
-        print("  2 → Auto-tune hash time")
-        print("  3 → Exit")
-        mode = type_validated_input("> ", str, enforce_input=True).strip()
+        while run_main:
+            print("\nChoose mode:")
+            print("  1 → Benchmark profile")
+            print("  2 → Auto-tune hash time")
+            print("  3 → Measure current script memory usage")
+            print("  Q → Exit")
+            mode = type_validated_input("> ", str, enforce_input=True).strip()
 
-        if mode == "1":
-            profile_num, profile = select_profile(profiles)
-            if profile:
-                benchmark_argon2id(DUMMY_PASSWORD, profile)
-            type_validated_input("\nPress Enter to return to main menu...", str)
-        elif mode == "2":
-            auto_tune(DUMMY_PASSWORD, profiles)
-            type_validated_input("\nPress Enter to return to main menu...", str)
-        elif mode == "3":
-            print("Exiting application")
-            run_main = False
-        else:
-            print("Invalid selection. Try again.")
+            if mode == "1":
+                profile_num, profile = select_profile(profiles)
+                if profile:
+                    benchmark_argon2id(DUMMY_PASSWORD, profile)
+                type_validated_input("\nPress Enter to return to main menu...", str)
+
+            elif mode == "2":
+                auto_tune(DUMMY_PASSWORD, profiles)
+                type_validated_input("\nPress Enter to return to main menu...", str)
+
+            elif mode == "3":
+                print(f"Memory used: {mem_measure_once()} MB")
+
+            elif mode in {"q", "Q"}:
+                print("Exiting application")
+                run_main = False
+
+            else:
+                print("Invalid selection. Try again.")
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Exiting.")
 
 
 # ---------------- RUN ----------------
