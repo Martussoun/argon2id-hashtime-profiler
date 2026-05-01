@@ -50,21 +50,21 @@ Run the script directly:
 python3 argon2id_hashtime_profiler.py
 ```
 
-**(1) Benchmark Profile**
+**(1) Benchmark Profile**    
 Executes a test hash using parameters from the selected JSON profile.
 You can enter a custom number of runs (default: 5).
 Displays average time and peak memory usage per run.
 Shows a generated example hash.
 
-**(2)Auto-tune Hash Time**
+**(2)Auto-tune Hash Time**    
 Runs an automated algorithm to find the best parameters to match a target hash time (e.g., 1.0s).
 Enter desired parameters and select either time_cost or memory_cost to be set as fixed, then enter a starting point for the tuned parameter.
 After the tuning finishes you will be offered an option to save the profile.
 
-**(3)Measure current script memory usage**
+**(3)Measure current script memory usage**    
 Measures the current script memory usage, this is the overhead of the script when testing(usually under 30MB).
 
-**(Q)Exit**
+**(Q)Exit**    
 Safely closes the application.
 
 ## NOTE
