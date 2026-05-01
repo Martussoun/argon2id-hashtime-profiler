@@ -63,7 +63,11 @@ Runs an automated algorithm to find the best parameters to match a target hash t
 Enter desired parameters and select either time_cost or memory_cost to be set as fixed, then enter a starting point for the tuned parameter.
 After the tuning finishes you will be offered an option to save the profile.
 
-**(3)Exit**
+**(3)Measure current script memory usage**
+
+Measures the current script memory usage, this is the overhead of the script when testing(usually under 30MB).
+
+**(Q)Exit**
 Safely closes the application.
 
 ## NOTE
